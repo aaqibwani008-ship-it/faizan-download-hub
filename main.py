@@ -19,7 +19,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # -------------------------
-# Render health server
+# Render health check
 # -------------------------
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -27,30 +27,29 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot is running")
+        self.wfile.write(b"Faizan Download Hub is running!")
 
     def log_message(self, format, *args):
-        return
+        pass
 
 
-def run_health_server():
+def run_server():
     port = int(os.getenv("PORT", "10000"))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
 
 # -------------------------
-# URL detection
+# URL
 # -------------------------
 
-URL_PATTERN = re.compile(
-    r"https?://[^\s]+",
-    re.IGNORECASE
-)
+def get_url(text):
+    match = re.search(r"https?://[^\s]+", text)
 
+    if not match:
+        return None
 
-def clean_url(url):
-    return url.strip().rstrip(".,!?)]}")
+    return match.group(0).rstrip(".,!?)]}")
 
 
 # -------------------------
@@ -58,9 +57,12 @@ def clean_url(url):
 # -------------------------
 
 def download_video(url, quality):
-    temp_dir = tempfile.mkdtemp(prefix="telegram_dl_")
+    folder = tempfile.mkdtemp(prefix="faizan_")
 
-    output = os.path.join(temp_dir, "%(title).100s.%(ext)s")
+    output = os.path.join(
+        folder,
+        "%(title).80s.%(ext)s"
+    )
 
     height = {
         "360": 360,
@@ -71,39 +73,62 @@ def download_video(url, quality):
 
     ydl_opts = {
         "outtmpl": output,
+
+        # Flexible format:
+        # requested quality -> lower quality -> best available
         "format": (
             f"bestvideo[height<={height}]+bestaudio/"
-            f"best[height<={height}]/best"
+            f"best[height<={height}]/"
+            f"best"
         ),
+
         "merge_output_format": "mp4",
+
         "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 3,
-        "fragment_retries": 3,
-        "socket_timeout": 30,
-        "restrictfilenames": True,
+
+        "quiet": False,
+        "no_warnings": False,
+
+        "retries": 5,
+        "fragment_retries": 5,
+        "extractor_retries": 3,
+
+        "socket_timeout": 60,
+
+        "http_headers": {
+            "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/131.0 Safari/537.36"
+        },
     }
+
+    print("DOWNLOAD URL:", url)
+    print("QUALITY:", quality)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
+
         filename = ydl.prepare_filename(info)
 
-        # yt-dlp may merge into mp4
-        base, _ = os.path.splitext(filename)
-        possible_mp4 = base + ".mp4"
+        base, ext = os.path.splitext(filename)
+        mp4 = base + ".mp4"
 
-        if os.path.exists(possible_mp4):
-            filename = possible_mp4
+        if os.path.exists(mp4):
+            filename = mp4
 
-    return filename, info, temp_dir
+    print("FILE:", filename)
+
+    return filename, info, folder
 
 
 # -------------------------
-# Start
+# Start command
 # -------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     keyboard = [
         [
             InlineKeyboardButton("360p", callback_data="360"),
@@ -116,29 +141,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "👋 Welcome!\n\n"
-        "Instagram, YouTube ya Snapchat ka public video link bhejo.\n\n"
-        "Phir quality select karo:",
+        "👋 Welcome to Faizan Download Hub!\n\n"
+        "📥 Instagram\n"
+        "📥 YouTube\n"
+        "📥 Snapchat\n\n"
+        "Public video link bhejo:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 # -------------------------
-# URL message
+# Link receive
 # -------------------------
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
-    urls = URL_PATTERN.findall(text)
+async def receive_link(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    if not urls:
+    url = get_url(update.message.text or "")
+
+    if not url:
         await update.message.reply_text(
-            "❌ Valid video URL nahi mila.\n\n"
-            "Instagram / YouTube / Snapchat ka public link bhejo."
+            "❌ Valid video link nahi mila.\n\n"
+            "YouTube, Instagram ya Snapchat ka "
+            "public link bhejo."
         )
         return
-
-    url = clean_url(urls[0])
 
     context.user_data["url"] = url
 
@@ -154,20 +183,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "🎬 Link mil gaya!\n\n"
+        "🔗 Link mil gaya!\n\n"
         "Quality select karo:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 # -------------------------
-# Quality button
+# Quality selected
 # -------------------------
 
-async def quality_callback(
+async def quality_selected(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     query = update.callback_query
     await query.answer()
 
@@ -175,76 +205,104 @@ async def quality_callback(
     url = context.user_data.get("url")
 
     if not url:
-        await query.edit_message_text(
-            "❌ Link nahi mila. Pehle video link bhejo."
+        await query.message.reply_text(
+            "❌ Link missing hai. Dobara link bhejo."
         )
         return
 
     await query.edit_message_text(
         f"⏳ Downloading...\n\n"
-        f"Quality: {quality}p\n"
+        f"🎬 Quality: {quality}p\n"
         f"Please wait..."
     )
 
     try:
-        filename, info, temp_dir = await asyncio.to_thread(
+
+        filename, info, folder = await asyncio.to_thread(
             download_video,
             url,
             quality
         )
 
         if not os.path.exists(filename):
-            raise Exception("Downloaded file not found")
+            raise Exception("File not found")
 
-        file_size = os.path.getsize(filename)
+        size = os.path.getsize(filename)
 
-        # Telegram Bot API normally has file-size limitations.
-        # Avoid trying to send extremely large files.
-        if file_size > 49 * 1024 * 1024:
+        # Telegram Bot API limit ke aas-paas
+        if size > 49 * 1024 * 1024:
+
             await query.message.reply_text(
-                "❌ File bahut badi hai.\n"
-                "Lower quality try karo."
+                "❌ Video Telegram ke liye bahut bada hai.\n\n"
+                "720p ya 480p try karo."
             )
+
             return
 
-        title = info.get("title", "Video")
-
-        await query.message.reply_video(
-            video=open(filename, "rb"),
-            caption=(
-                f"✅ Download complete!\n\n"
-                f"🎬 {title}\n"
-                f"📺 Quality: {quality}p"
-            ),
-            supports_streaming=True,
+        title = info.get(
+            "title",
+            "Downloaded Video"
         )
+
+        with open(filename, "rb") as video:
+
+            await query.message.reply_video(
+                video=video,
+                caption=(
+                    "✅ Download Complete!\n\n"
+                    f"🎬 {title}\n"
+                    f"📺 Quality: {quality}p\n\n"
+                    "🤖 Faizan Download Hub"
+                ),
+                supports_streaming=True,
+            )
+
+        # Cleanup
 
         try:
             os.remove(filename)
-            os.rmdir(temp_dir)
+            os.rmdir(folder)
         except Exception:
             pass
 
-    except Exception as e:
-        error = str(e)
+    except Exception as error:
 
-        if "login" in error.lower():
-            message = (
-                "❌ Is video ke liye login required hai.\n"
+        print("DOWNLOAD ERROR:", error)
+
+        error_text = str(error).lower()
+
+        if "private" in error_text:
+
+            msg = (
+                "❌ Private video hai.\n"
                 "Public video link try karo."
             )
-        elif "private" in error.lower():
-            message = "❌ Private video download nahi ho sakta."
-        elif "unsupported" in error.lower():
-            message = "❌ Yeh URL supported nahi hai."
-        else:
-            message = (
-                "❌ Download failed.\n\n"
-                "Video public hai aur URL sahi hai to "
-                "dobara try karo."
+
+        elif "login" in error_text:
+
+            msg = (
+                "❌ Is video ko login chahiye.\n"
+                "Public video try karo."
             )
 
-        await query.message.reply_text(message)
+        elif "unsupported" in error_text:
+
+            msg = (
+                "❌ Ye URL supported nahi hai."
+            )
+
+        else:
+
+            msg = (
+                "❌ Download failed.\n\n"
+                "Possible reasons:\n"
+                "• Video private hai\n"
+                "• Platform ne request block ki\n"
+                "• Video available nahi hai\n\n"
+                "Dobara try karo."
+            )
+
+        await query.message.reply_text(msg)
 
 
 # -------------------------
@@ -252,7 +310,11 @@ async def quality_callback(
 # -------------------------
 
 async def error_handler(update, context):
-    print("ERROR:", context.error)
+
+    print(
+        "BOT ERROR:",
+        context.error
+    )
 
 
 # -------------------------
@@ -260,39 +322,51 @@ async def error_handler(update, context):
 # -------------------------
 
 def main():
+
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN environment variable missing"
         )
 
+    # Render web server
     threading.Thread(
-        target=run_health_server,
+        target=run_server,
         daemon=True
     ).start()
 
-    app = (
+    application = (
         Application.builder()
         .token(BOT_TOKEN)
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
+    application.add_handler(
+        CommandHandler("start", start)
+    )
 
-    app.add_handler(
+    application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_message
+            receive_link
         )
     )
 
-    app.add_handler(
-        CallbackQueryHandler(quality_callback)
+    application.add_handler(
+        CallbackQueryHandler(
+            quality_selected
+        )
     )
 
-    app.add_error_handler(error_handler)
+    application.add_error_handler(
+        error_handler
+    )
 
-    print("🤖 Bot started...")
-    app.run_polling(
+    print(
+        "🤖 Faizan Download Hub is running!"
+    )
+
+    application.run_polling(
         allowed_updates=Update.ALL_TYPES
     )
 
